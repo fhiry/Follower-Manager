@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Insta Checker Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h1 class="logo">Insta Checker</h1>
+        <label class="switch" title="Toggle Extension ON/OFF">
+          <input type="checkbox" id="extension-toggle" checked>
+          <span class="slider round"></span>
+        </label>
+      </div>
+      <p class="subtitle">Secure connection analyzer</p>
+    </header>
+
+    <!-- Stats Panel -->
+    <div class="stats-panel">
+      <div class="stat-box">
+        <span class="stat-val" id="stat-followers">0</span>
+        <span class="stat-lbl">Followers</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-box">
+        <span class="stat-val" id="stat-following">0</span>
+        <span class="stat-lbl">Following</span>
+      </div>
+    </div>
+    
+    <div class="last-scan" id="last-scan-txt">Last scan: Never</div>
+
+    <!-- Segmented Tabs (Shadcn UI style) -->
+    <div class="tabs-container">
+      <button class="tab-btn active" data-tab="not-following">
+        Unfollowers
+        <span class="tab-badge" id="badge-not-following">0</span>
+      </button>
+      <button class="tab-btn" data-tab="fans">
+        Fans
+        <span class="tab-badge" id="badge-fans">0</span>
+      </button>
+      <button class="tab-btn" data-tab="mutuals">
+        Mutuals
+        <span class="tab-badge" id="badge-mutuals">0</span>
+      </button>
+    </div>
+
+    <!-- Results Panel -->
+    <div class="results-container">
+      <!-- Active HUD warning/info when scanning is active -->
+      <div id="recording-banner" class="recording-banner hidden">
+        <span class="pulse-dot"></span>
+        <span id="recording-text">Scanning list in progress...</span>
+      </div>
+
+      <!-- List of Users -->
+      <ul id="user-list" class="user-list">
+        <!-- Will be populated dynamically -->
+      </ul>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">✓</div>
+        <p class="empty-title">All caught up!</p>
+        <p class="empty-desc">No accounts found in this category.</p>
+      </div>
+    </div>
+
+    <!-- Queue Controls -->
+    <div class="queue-bar hidden" id="queue-bar" style="display: flex; gap: 8px; align-items: center; justify-content: space-between;">
+      <span class="queue-info" id="queue-info" style="white-space: nowrap; font-size: 11px; margin-right: auto;">779 unfollow</span>
+      <input type="number" id="start-index-input" placeholder="Start # (1)" min="1" style="width: 80px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); color: #fff; font-size: 11px; outline: none;">
+      <button id="start-queue-btn" class="btn queue" style="margin-top: 0; padding: 6px 10px; font-size: 11px; white-space: nowrap;">⚡ Start</button>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="actions">
+      <button id="export-btn" class="btn primary">Copy to Clipboard</button>
+      <button id="reset-btn" class="btn secondary">Reset Data</button>
+    </div>
+
+    <!-- Inline Confirm Panel (replaces browser confirm()) -->
+    <div id="confirm-panel" class="confirm-panel hidden">
+      <p class="confirm-msg" id="confirm-msg">Are you sure?</p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" class="btn secondary">Cancel</button>
+        <button id="confirm-ok" class="btn danger">Confirm</button>
+      </div>
+    </div>
+
+    <!-- Inline Toast Stack -->
+    <div id="popup-toast-stack" class="popup-toast-stack"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,1911 @@
+
+
+========================================
+FILE: manifest.json
+========================================
+
+{
+  "manifest_version": 3,
+  "name": "Insta Unfollow Checker",
+  "version": "2.0",
+  "description": "Check who doesn't follow you back on Instagram securely using network interception.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "host_permissions": [
+    "*://*.instagram.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.instagram.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": ["*://*.instagram.com/*"]
+    }
+  ]
+}
+
+
+========================================
+FILE: background.js
+========================================
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'START_BATCH_QUEUE') {
+    const unfollowQueue = request.queue;
+    const queueIndex = request.startIndex || 0;
+    
+    chrome.tabs.query({ url: "*://*.instagram.com/*" }, (tabs) => {
+      // Pick up to 4 tabs
+      const batchTabs = tabs.slice(0, 4).map(t => t.id);
+      if (batchTabs.length === 0) {
+        chrome.storage.local.set({ batchActive: false });
+        sendResponse({ success: false, error: 'No Instagram tabs found.' });
+        return;
+      }
+      
+      chrome.storage.local.set({
+        batchActive: true,
+        batchTabs: batchTabs,
+        batchQueue: unfollowQueue,
+        batchQueueIndex: queueIndex
+      }, () => {
+        loadCurrentBatch(batchTabs, unfollowQueue, queueIndex);
+        sendResponse({ success: true, count: batchTabs.length });
+      });
+    });
+    return true; // Keep channel open for async response
+  }
+  
+  if (request.action === 'NEXT_BATCH') {
+    chrome.storage.local.get(['batchActive', 'batchTabs', 'batchQueue', 'batchQueueIndex'], (res) => {
+      if (!res.batchActive) {
+        sendResponse({ success: false });
+        return;
+      }
+      
+      const batchTabs = res.batchTabs || [];
+      const unfollowQueue = res.batchQueue || [];
+      let queueIndex = (res.batchQueueIndex || 0) + batchTabs.length;
+      
+      if (queueIndex >= unfollowQueue.length) {
+        chrome.storage.local.set({ batchActive: false }, () => {
+          batchTabs.forEach(id => {
+            chrome.tabs.sendMessage(id, { action: 'BATCH_COMPLETE' }).catch(() => {});
+          });
+          sendResponse({ success: true });
+        });
+      } else {
+        chrome.storage.local.set({ batchQueueIndex: queueIndex }, () => {
+          loadCurrentBatch(batchTabs, unfollowQueue, queueIndex);
+          sendResponse({ success: true });
+        });
+      }
+    });
+    return true;
+  }
+  
+  if (request.action === 'CHECK_BATCH_STATUS') {
+    chrome.storage.local.get(['batchActive', 'batchTabs', 'batchQueue', 'batchQueueIndex'], (res) => {
+      if (!res.batchActive || !sender.tab || !res.batchTabs || !res.batchTabs.includes(sender.tab.id)) {
+        sendResponse({ isBatchTab: false });
+        return;
+      }
+      
+      const tabOffset = res.batchTabs.indexOf(sender.tab.id);
+      const userIdx = res.batchQueueIndex + tabOffset;
+      const unfollowQueue = res.batchQueue || [];
+      
+      if (userIdx >= unfollowQueue.length) {
+        sendResponse({ isBatchTab: false });
+        return;
+      }
+      
+      sendResponse({
+        isBatchTab: true,
+        currentUser: unfollowQueue[userIdx],
+        currentIndex: userIdx,
+        total: unfollowQueue.length,
+        batchSize: res.batchTabs.length
+      });
+    });
+    return true;
+  }
+});
+
+function loadCurrentBatch(batchTabs, unfollowQueue, queueIndex) {
+  batchTabs.forEach((tabId, i) => {
+    const userIdx = queueIndex + i;
+    if (userIdx < unfollowQueue.length) {
+      const username = unfollowQueue[userIdx];
+      chrome.tabs.update(tabId, { url: `https://www.instagram.com/${username}/` });
+    }
+  });
+}
+
+
+========================================
+FILE: interceptor.js
+========================================
+
+(function () {
+  // ─── Fetch Interceptor ───────────────────────────────────────────────────
+  const _fetch = window.fetch;
+  window.fetch = async function (...args) {
+    const response = await _fetch.apply(this, args);
+
+    // Robustly extract URL and method regardless of how fetch was called
+    let url = '', method = 'GET';
+
+    if (typeof args[0] === 'string') {
+      url    = args[0];
+      method = (args[1]?.method || 'GET').toUpperCase();
+    } else if (args[0] instanceof Request) {
+      url    = args[0].url;
+      method = (args[0].method || 'GET').toUpperCase();
+    } else if (args[0] && args[0].url) {
+      url    = args[0].url;
+      method = (args[0].method || args[1]?.method || 'GET').toUpperCase();
+    }
+
+    // Detect UNFOLLOW — POST to any friendships destroy endpoint
+    if (
+      method === 'POST' &&
+      (url.includes('friendships') || url.includes('friendship')) &&
+      (url.includes('destroy') || url.includes('unfollow'))
+    ) {
+      window.dispatchEvent(new CustomEvent('IG_CHECKER_UNFOLLOW'));
+    }
+
+    // Detect FOLLOWERS / FOLLOWING list data (GET only)
+    if (
+      method === 'GET' &&
+      (url.includes('/api/v1/friendships/') || url.includes('/graphql/query'))
+    ) {
+      try {
+        response.clone().json().then(json => handleListData(url, json)).catch(() => {});
+      } catch (e) {}
+    }
+
+    return response;
+  };
+
+  // ─── XHR Interceptor (fallback for older IG code paths) ──────────────────
+  const _XHROpen = XMLHttpRequest.prototype.open;
+  const _XHRSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this._igMethod = (method || 'GET').toUpperCase();
+    this._igUrl    = url || '';
+    return _XHROpen.apply(this, [method, url, ...rest]);
+  };
+
+  XMLHttpRequest.prototype.send = function (...args) {
+    this.addEventListener('load', function () {
+      if (
+        this._igMethod === 'POST' &&
+        (this._igUrl.includes('friendships') || this._igUrl.includes('friendship')) &&
+        (this._igUrl.includes('destroy') || this._igUrl.includes('unfollow'))
+      ) {
+        window.dispatchEvent(new CustomEvent('IG_CHECKER_UNFOLLOW'));
+      }
+    });
+    return _XHRSend.apply(this, args);
+  };
+
+  // ─── List Data Parser ─────────────────────────────────────────────────────
+  function handleListData(url, json) {
+    let listType = null;
+    let users    = [];
+
+    if (url.includes('/api/v1/friendships/')) {
+      if (url.includes('/followers/'))  listType = 'followers';
+      else if (url.includes('/following/')) listType = 'following';
+      if (listType && Array.isArray(json.users)) {
+        users = json.users.map(u => u.username).filter(Boolean);
+      }
+    } else if (url.includes('/graphql/query')) {
+      const user = json?.data?.user || {};
+      if (user.edge_followed_by) {
+        listType = 'followers';
+        users = (user.edge_followed_by.edges || []).map(e => e?.node?.username).filter(Boolean);
+      } else if (user.edge_follow) {
+        listType = 'following';
+        users = (user.edge_follow.edges || []).map(e => e?.node?.username).filter(Boolean);
+      }
+    }
+
+    if (listType && users.length > 0) {
+      window.dispatchEvent(new CustomEvent('IG_CHECKER_DATA', { detail: { listType, users } }));
+    }
+  }
+})();
+
+
+========================================
+FILE: content.js
+========================================
+
+// content.js — Full Rewrite v3 (Toast System + Unfollow Queue)
+(function () {
+  if (window.instaCheckerInjected) return;
+  window.instaCheckerInjected = true;
+
+  // ─── Inject interceptor into Main World ───────────────────────────────────
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('interceptor.js');
+  (document.head || document.documentElement).appendChild(script);
+  script.onload = () => script.remove();
+
+  // ─── State ────────────────────────────────────────────────────────────────
+  let followers    = new Set();
+  let following    = new Set();
+  let recordingType = null;
+  let domObserver  = null;
+  let shadow       = null;
+
+  // ─── Load persisted data ──────────────────────────────────────────────────
+  chrome.storage.local.get(['followers', 'following'], (res) => {
+    if (res.followers) followers = new Set(res.followers);
+    if (res.following) following = new Set(res.following);
+    updateHudCounter();
+  });
+
+  // ─── Network interception: list data ─────────────────────────────────────
+  window.addEventListener('IG_CHECKER_DATA', (e) => {
+    const { listType, users } = e.detail;
+    if (!recordingType || recordingType !== listType) return;
+
+    const activeSet = listType === 'followers' ? followers : following;
+    let added = 0;
+    users.forEach(u => { if (!activeSet.has(u)) { activeSet.add(u); added++; } });
+
+    if (added > 0) {
+      updateHudCounter();
+      saveCurrentState();
+      chrome.runtime.sendMessage({ action: 'updateCount', type: listType, count: activeSet.size }).catch(() => {});
+    }
+  });
+
+  // ─── Network interception: (no longer used for queue, kept for future) ───
+  window.addEventListener('IG_CHECKER_UNFOLLOW', () => {
+    // We rely on manual 'Enter' key for batch skipping now.
+  });
+
+
+  // ─── DOM Fallback Parser ──────────────────────────────────────────────────
+  const manuallyRemoved = new Set(); // Track explicitly removed users so they aren't auto-added back
+
+  function extractUsersFromDom() {
+    const dialog = document.querySelector('div[role="dialog"]');
+    if (!dialog) return;
+
+    let countChanged = false;
+
+    // Infer list type if not recording, do this once per function call, NOT in the loop
+    let currentListType = recordingType;
+    if (!currentListType) {
+      const titleEl = dialog.querySelector('h1, h2, h3, div[dir="auto"]');
+      const t = titleEl ? titleEl.textContent.toLowerCase() : '';
+      if (t.includes('follower') || t.includes('pengikut')) currentListType = 'followers';
+      else if (t.includes('following') || t.includes('mengikuti')) currentListType = 'following';
+    }
+
+    dialog.querySelectorAll('a').forEach(link => {
+      const href = link.getAttribute('href');
+      if (!href || !href.startsWith('/')) return;
+      const clean = href.split('?')[0].split('#')[0];
+      const parts = clean.split('/').filter(p => p.length > 0);
+      if (parts.length !== 1) return;
+      
+      const username = parts[0];
+      const excluded = ['explore','reels','stories','direct','p','developer','about','blog','help','privacy','terms'];
+      if (excluded.includes(username)) return;
+
+      // Ensure this is the text link, not the avatar picture link
+      if (!link.textContent || !link.textContent.trim().startsWith(username)) return;
+
+      // Determine which set this user likely belongs to
+      let targetSet = null;
+      if (currentListType === 'followers') targetSet = followers;
+      else if (currentListType === 'following') targetSet = following;
+
+      // Check if user is in any database
+      let inDatabase = followers.has(username) || following.has(username);
+
+      // Auto-add if currently recording and not removed manually
+      if (recordingType && targetSet && !targetSet.has(username) && !manuallyRemoved.has(username)) { 
+        targetSet.add(username); 
+        inDatabase = true;
+        countChanged = true; 
+      }
+
+      // Inject UI Checkbox if not present
+      if (!link.hasAttribute('data-ig-checker-handled')) {
+        link.setAttribute('data-ig-checker-handled', 'true');
+        link.style.display = 'inline-flex';
+        link.style.alignItems = 'center';
+
+        const btn = document.createElement('span');
+        btn.className = 'ig-checker-toggle-btn';
+        btn.style.marginLeft = '4px';
+        btn.style.cursor = 'pointer';
+        btn.style.fontSize = '12px';
+        btn.style.userSelect = 'none';
+        btn.title = 'Click to toggle record status';
+        
+        // Sync visual state
+        const updateVisuals = () => {
+          if (inDatabase) {
+            btn.textContent = '✅';
+            btn.style.opacity = '1';
+          } else {
+            btn.textContent = '⬜'; // Empty box
+            btn.style.opacity = '0.5';
+          }
+        };
+
+        updateVisuals();
+
+        btn.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          
+          if (!targetSet) {
+            showToast('Cannot determine if this is Followers or Following list. Start recording first!', 'warning');
+            return;
+          }
+
+          if (inDatabase) {
+            // Remove from both sets entirely
+            followers.delete(username);
+            following.delete(username);
+            manuallyRemoved.add(username);
+            inDatabase = false;
+          } else {
+            // Add to current target set
+            targetSet.add(username);
+            manuallyRemoved.delete(username);
+            inDatabase = true;
+          }
+          
+          updateVisuals();
+          updateHudCounter();
+          saveCurrentState();
+          chrome.runtime.sendMessage({ action: 'updateCount', type: 'followers', count: followers.size }).catch(() => {});
+          chrome.runtime.sendMessage({ action: 'updateCount', type: 'following', count: following.size }).catch(() => {});
+        };
+
+        link.appendChild(btn);
+      } else {
+        // Just sync visual state in case it changed
+        const btn = link.querySelector('.ig-checker-toggle-btn');
+        if (btn) {
+          if (inDatabase) {
+            btn.textContent = '✅';
+            btn.style.opacity = '1';
+          } else {
+            btn.textContent = '⬜';
+            btn.style.opacity = '0.5';
+          }
+        }
+      }
+    });
+
+    if (countChanged) {
+      updateHudCounter();
+      saveCurrentState();
+      if (recordingType) {
+        chrome.runtime.sendMessage({ action: 'updateCount', type: recordingType, count: (recordingType === 'followers' ? followers.size : following.size) }).catch(() => {});
+      }
+    }
+  }
+
+  let domObserverTimeout = null;
+
+  function startDomObserver() {
+    if (domObserver) domObserver.disconnect();
+    extractUsersFromDom();
+    domObserver = new MutationObserver(() => {
+      if (domObserverTimeout) clearTimeout(domObserverTimeout);
+      domObserverTimeout = setTimeout(extractUsersFromDom, 100);
+    });
+    
+    // Ensure body exists before observing
+    if (document.body) {
+      domObserver.observe(document.body, { childList: true, subtree: true });
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        domObserver.observe(document.body, { childList: true, subtree: true });
+      });
+    }
+  }
+  function stopDomObserver() {
+    // We don't stop the observer when recording stops, to keep visual annotations active
+  }
+
+  function saveCurrentState() {
+    const data = { lastScan: new Date().toISOString() };
+    if (recordingType === 'followers') data.followers = Array.from(followers);
+    if (recordingType === 'following') data.following = Array.from(following);
+    chrome.storage.local.set(data);
+  }
+
+  // ─── Shadow DOM Setup ─────────────────────────────────────────────────────
+  function mountHud() {
+    if (document.getElementById('insta-checker-hud-root')) return;
+    if (!document.body) return;
+
+    const root = document.createElement('div');
+    root.id = 'insta-checker-hud-root';
+    document.body.appendChild(root);
+    shadow = root.attachShadow({ mode: 'closed' });
+
+    const style = document.createElement('style');
+    style.textContent = `
+      :host { all: initial; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+      /* ── Wrapper stacks toasts above HUD ── */
+      .wrapper {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        width: 300px;
+      }
+
+      /* ── Toast Stack ── */
+      .toast-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        width: 100%;
+      }
+      .toast {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 11px 14px;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.88);
+        backdrop-filter: blur(16px) saturate(160%);
+        -webkit-backdrop-filter: blur(16px) saturate(160%);
+        border: 1px solid rgba(255,255,255,0.07);
+        box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+        font-size: 13px;
+        color: #e2e8f0;
+        line-height: 1.4;
+        animation: toast-in 0.25s cubic-bezier(0.4,0,0.2,1);
+        transition: opacity 0.2s, transform 0.2s;
+        cursor: default;
+      }
+      .toast.info    { border-color: rgba(59,130,246,0.35); }
+      .toast.success { border-color: rgba(16,185,129,0.35); }
+      .toast.warning { border-color: rgba(245,158,11,0.35); }
+      .toast.error   { border-color: rgba(239,68,68,0.35);  }
+
+      .toast-icon { font-size: 14px; line-height: 1.4; flex-shrink: 0; }
+      .toast-msg  { flex: 1; }
+      .toast-close {
+        background: none; border: none; color: #64748b;
+        cursor: pointer; font-size: 16px; line-height: 1;
+        padding: 0; flex-shrink: 0; transition: color 0.15s;
+      }
+      .toast-close:hover { color: #f8fafc; }
+
+      /* Progress bar */
+      .toast-progress {
+        height: 2px;
+        background: rgba(255,255,255,0.12);
+        border-radius: 0 0 11px 11px;
+        overflow: hidden;
+        margin: 0 -14px -11px -14px;
+      }
+      .toast-progress-bar {
+        height: 100%;
+        border-radius: 2px;
+        transition: none;
+      }
+      .toast.info    .toast-progress-bar { background: #3b82f6; }
+      .toast.success .toast-progress-bar { background: #10b981; }
+      .toast.warning .toast-progress-bar { background: #f59e0b; }
+      .toast.error   .toast-progress-bar { background: #ef4444; }
+
+      @keyframes toast-in {
+        from { opacity: 0; transform: translateX(20px) scale(0.96); }
+        to   { opacity: 1; transform: translateX(0)    scale(1); }
+      }
+
+      /* ── HUD Container ── */
+      .hud {
+        width: 100%;
+        background: rgba(15, 23, 42, 0.82);
+        backdrop-filter: blur(18px) saturate(180%);
+        -webkit-backdrop-filter: blur(18px) saturate(180%);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        color: #f8fafc;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+        overflow: hidden;
+        transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+      }
+      .hud.recording {
+        box-shadow: 0 10px 30px rgba(0,0,0,0.4), 0 0 20px rgba(239,68,68,0.1);
+      }
+      .hud.minimized {
+        width: 52px; height: 52px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer;
+      }
+      .hud.minimized:hover { transform: scale(1.05); }
+      .hud.minimized .hud-body { display: none; }
+      .hud.minimized .min-badge { display: flex; }
+
+      .min-badge {
+        display: none; flex-direction: column;
+        align-items: center; justify-content: center;
+        font-size: 10px; font-weight: 700; gap: 1px; width: 100%;
+      }
+      .min-badge-icon { font-size: 18px; }
+      .min-badge-count { color: #3b82f6; }
+      .min-badge-count.rec { color: #ef4444; }
+
+      .hud-body { padding: 14px; }
+      .hud-header {
+        display: flex; justify-content: space-between;
+        align-items: center; margin-bottom: 10px;
+      }
+      .hud-title {
+        font-size: 15px; font-weight: 800; letter-spacing: -0.02em;
+        background: linear-gradient(to right, #f09433,#e6683c,#dc2743,#cc2366,#bc1888);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      }
+      .hud-min-btn {
+        background: none; border: none; color: #64748b;
+        cursor: pointer; font-size: 20px; padding: 0;
+        line-height: 1; transition: color 0.15s;
+      }
+      .hud-min-btn:hover { color: #f8fafc; }
+
+      .status-row {
+        display: flex; align-items: center;
+        gap: 8px; margin-bottom: 12px;
+        font-size: 12px; color: #94a3b8;
+      }
+      .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #22c55e; flex-shrink: 0;
+      }
+      .dot.rec {
+        background: #ef4444;
+        animation: pulse 1.8s infinite ease-in-out;
+      }
+      @keyframes pulse {
+        0%,100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239,68,68,.7); }
+        50%      { transform: scale(1.2); box-shadow: 0 0 0 5px rgba(239,68,68,0); }
+      }
+
+      .counter-box {
+        background: rgba(30,41,59,0.5);
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 10px; padding: 12px;
+        text-align: center; margin-bottom: 12px;
+      }
+      .counter-num {
+        font-size: 34px; font-weight: 700;
+        color: #f8fafc; line-height: 1;
+        letter-spacing: -0.03em;
+      }
+      .counter-lbl {
+        font-size: 10px; color: #64748b;
+        text-transform: uppercase; letter-spacing: 0.06em;
+        margin-top: 3px;
+      }
+
+      .btn {
+        width: 100%; border: none; border-radius: 8px;
+        padding: 10px; font-size: 13px; font-weight: 600;
+        cursor: pointer; color: #fff;
+        transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
+      }
+      .btn.start  { background: #3b82f6; }
+      .btn.start:hover  { background: #2563eb; transform: translateY(-1px); }
+      .btn.stop   { background: #ef4444; }
+      .btn.stop:hover   { background: #dc2626; transform: translateY(-1px); }
+    `;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'wrapper';
+
+    // Toast stack (renders above HUD)
+    const toastStack = document.createElement('div');
+    toastStack.className = 'toast-stack';
+    toastStack.id = 'toast-stack';
+
+    // HUD
+    const hud = document.createElement('div');
+    hud.className = 'hud';
+    hud.id = 'hud';
+    hud.innerHTML = `
+      <div class="min-badge">
+        <span class="min-badge-icon">📊</span>
+        <span class="min-badge-count" id="min-count">0</span>
+      </div>
+      <div class="hud-body">
+        <div class="hud-header">
+          <span class="hud-title">Insta Checker</span>
+          <button class="hud-min-btn" id="hud-min-btn">×</button>
+        </div>
+        <div class="status-row">
+          <div class="dot" id="status-dot"></div>
+          <span id="status-txt">Idle</span>
+        </div>
+        <div class="counter-box">
+          <div class="counter-num" id="counter-num">0</div>
+          <div class="counter-lbl" id="counter-lbl">Users Collected</div>
+        </div>
+        <button class="btn start" id="action-btn">Start Recording</button>
+      </div>
+    `;
+
+    wrapper.appendChild(toastStack);
+    wrapper.appendChild(hud);
+    shadow.appendChild(style);
+    shadow.appendChild(wrapper);
+
+    // ── HUD Events ──
+    shadow.getElementById('hud-min-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      hud.classList.add('minimized');
+    });
+    hud.addEventListener('click', () => {
+      if (hud.classList.contains('minimized')) hud.classList.remove('minimized');
+    });
+    shadow.getElementById('action-btn').addEventListener('click', () => {
+      if (!recordingType) startRecording();
+      else stopRecording();
+    });
+
+    // ── Check if queue mode on page load ──
+    checkQueueMode();
+  }
+
+  // ─── Toast System ─────────────────────────────────────────────────────────
+  function showToast(msg, type = 'info', duration = 4000) {
+    if (!shadow) return;
+    const stack = shadow.getElementById('toast-stack');
+    if (!stack) return;
+
+    const icons = { info: 'ℹ️', success: '✅', warning: '⚠️', error: '🔴' };
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+      <span class="toast-icon">${icons[type] || 'ℹ️'}</span>
+      <span class="toast-msg">${msg}</span>
+      <button class="toast-close" title="Dismiss">×</button>
+      ${duration > 0 ? '<div class="toast-progress"><div class="toast-progress-bar" id="tpb-' + Date.now() + '"></div></div>' : ''}
+    `;
+
+    // X dismiss
+    toast.querySelector('.toast-close').addEventListener('click', () => dismissToast(toast));
+
+    // Prepend → newest appears at top of stack
+    stack.prepend(toast);
+
+    // Auto-dismiss with progress bar
+    if (duration > 0) {
+      const bar = toast.querySelector('.toast-progress-bar');
+      if (bar) {
+        bar.style.width = '100%';
+        bar.style.transition = `width ${duration}ms linear`;
+        requestAnimationFrame(() => { bar.style.width = '0%'; });
+      }
+      setTimeout(() => dismissToast(toast), duration);
+    }
+
+    return toast;
+  }
+
+  function dismissToast(toast) {
+    if (!toast || !toast.parentNode) return;
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(20px)';
+    setTimeout(() => toast.remove(), 220);
+  }
+
+  // ─── Recording Controls ───────────────────────────────────────────────────
+  function startRecording() {
+    const dialog = document.querySelector('div[role="dialog"]');
+    if (!dialog) {
+      showToast('Open your Followers or Following list on Instagram first!', 'warning', 5000);
+      return;
+    }
+
+    // Try to auto-detect list type from dialog header
+    let detected = null;
+    dialog.querySelectorAll('span, h1, h2, h3').forEach(el => {
+      const t = el.textContent.toLowerCase();
+      if (t.includes('follower') && !t.includes('following') && !detected) detected = 'followers';
+      if (t.includes('following') && !detected) detected = 'following';
+    });
+
+    if (detected) {
+      // Auto-detected — start immediately
+      _beginRecording(detected);
+    } else {
+      // Can't auto-detect — show a toast with inline choice buttons
+      const pickToast = showToast('Which list are you recording?', 'info', 0);
+      if (pickToast) {
+        const btnsDiv = document.createElement('div');
+        btnsDiv.style.cssText = 'display:flex; gap:6px; margin-top:8px;';
+
+        ['Followers', 'Following'].forEach(label => {
+          const btn = document.createElement('button');
+          btn.textContent = label;
+          btn.style.cssText = `
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 6px; color: #f8fafc; font-size: 11px; font-weight: 600;
+            padding: 4px 10px; cursor: pointer; transition: all 0.15s;
+          `;
+          btn.addEventListener('click', () => {
+            dismissToast(pickToast);
+            _beginRecording(label.toLowerCase());
+          });
+          btnsDiv.appendChild(btn);
+        });
+
+        pickToast.querySelector('.toast-msg').appendChild(btnsDiv);
+      }
+    }
+  }
+
+  function _beginRecording(type) {
+    recordingType = type;
+    if (recordingType === 'followers') followers.clear();
+    else following.clear();
+
+    const dot    = shadow.getElementById('status-dot');
+    const txt    = shadow.getElementById('status-txt');
+    const btn    = shadow.getElementById('action-btn');
+    const lbl    = shadow.getElementById('counter-lbl');
+    const hud    = shadow.getElementById('hud');
+    const minCnt = shadow.getElementById('min-count');
+
+    dot.classList.add('rec');
+    txt.textContent = `Recording ${recordingType}...`;
+    btn.textContent = 'Stop & Save';
+    btn.className = 'btn stop';
+    lbl.textContent = `${recordingType} collected`;
+    hud.classList.add('recording');
+    minCnt.classList.add('rec');
+
+    updateHudCounter();
+    startDomObserver();
+
+    showToast(`🔴 Recording ${recordingType}… scroll the list!`, 'info', 0);
+  }
+
+  function stopRecording() {
+    stopDomObserver();
+    saveCurrentState();
+
+    const dot    = shadow.getElementById('status-dot');
+    const txt    = shadow.getElementById('status-txt');
+    const btn    = shadow.getElementById('action-btn');
+    const lbl    = shadow.getElementById('counter-lbl');
+    const hud    = shadow.getElementById('hud');
+    const minCnt = shadow.getElementById('min-count');
+
+    const savedCount = recordingType === 'followers' ? followers.size : following.size;
+
+    dot?.classList.remove('rec');
+    if (txt) txt.textContent = 'Idle';
+    if (btn) {
+      btn.textContent = 'Start Recording';
+      btn.className = 'btn start';
+    }
+    if (lbl) lbl.textContent = 'Users Collected';
+    hud?.classList.remove('recording');
+    minCnt?.classList.remove('rec');
+
+    // Dismiss all persistent toasts
+    shadow.querySelectorAll('.toast').forEach(t => dismissToast(t));
+    showToast(`✅ Saved ${savedCount} ${recordingType}!`, 'success');
+
+    recordingType = null;
+    updateHudCounter();
+  }
+
+  function updateHudCounter() {
+    if (!shadow) return;
+    const el  = shadow.getElementById('counter-num');
+    const min = shadow.getElementById('min-count');
+    let count = 0;
+    if (recordingType === 'followers') count = followers.size;
+    else if (recordingType === 'following') count = following.size;
+    else count = Math.max(followers.size, following.size);
+    if (el)  el.textContent  = count;
+    if (min) min.textContent = count;
+  }
+
+  // ─── Synchronized Batch Queue Mode ───────────────────────────────────────
+  
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === 'BATCH_COMPLETE') {
+      showToast('✅ Queue complete! All batches done.', 'success');
+    }
+  });
+
+  function checkQueueMode() {
+    chrome.runtime.sendMessage({ action: 'CHECK_BATCH_STATUS' }, (res) => {
+      if (!res || !res.isBatchTab) return;
+      
+      const currentUser = res.currentUser;
+      const pathUser    = window.location.pathname.split('/').filter(p => p)[0];
+      
+      if (pathUser === currentUser) {
+        // Show batch toast
+        const toast = showToast(
+          `🎯 Batch | Queue ${res.currentIndex + 1}/${res.total}: @${currentUser}`,
+          'warning',
+          0
+        );
+
+        if (toast) {
+          const nextBtn = document.createElement('button');
+          nextBtn.textContent = 'Next Batch (Enter)';
+          nextBtn.style.cssText = `
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px; color: #f8fafc; font-size: 11px; font-weight: 600;
+            padding: 4px 10px; cursor: pointer; margin-top: 8px; transition: all 0.15s;
+            display: inline-block;
+          `;
+          nextBtn.addEventListener('mouseenter', () => { nextBtn.style.background = 'rgba(255,255,255,0.15)'; });
+          nextBtn.addEventListener('mouseleave', () => { nextBtn.style.background = 'rgba(255,255,255,0.08)'; });
+          
+          let skipTriggered = false;
+          const handleNextBatch = () => {
+            if (skipTriggered) return;
+            skipTriggered = true;
+            document.removeEventListener('keydown', handleEnterSkip);
+            dismissToast(toast);
+            showToast('⏩ Loading next batch across all windows...', 'info', 3000);
+            chrome.runtime.sendMessage({ action: 'NEXT_BATCH' });
+          };
+          
+          nextBtn.addEventListener('click', handleNextBatch);
+          
+          const handleEnterSkip = (e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleNextBatch();
+            }
+          };
+          document.addEventListener('keydown', handleEnterSkip);
+          
+          toast.querySelector('.toast-msg').appendChild(document.createElement('br'));
+          toast.querySelector('.toast-msg').appendChild(nextBtn);
+        }
+      }
+    });
+  }
+
+  // ─── Message handlers from popup ─────────────────────────────────────────
+  chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+    if (req.action === 'getStatus') {
+      sendResponse({
+        isRecording: recordingType !== null,
+        recordingType,
+        count: recordingType === 'followers' ? followers.size : following.size,
+        followersCount: followers.size,
+        followingCount: following.size
+      });
+    }
+    if (req.action === 'showToast') {
+      showToast(req.msg, req.type || 'info', req.duration ?? 4000);
+    }
+    if (req.action === 'toggleExtension') {
+      window.location.reload();
+    }
+    return true;
+  });
+
+  // ─── Initialization ───────────────────────────────────────────────────────
+  let extensionEnabled = true;
+  chrome.storage.local.get(['extensionEnabled'], (res) => {
+    if (res.extensionEnabled !== undefined) extensionEnabled = res.extensionEnabled;
+    
+    if (extensionEnabled) {
+      mountHud();
+    }
+  });
+
+  // SPA navigation guard — remount if Instagram nukes our element
+  setInterval(() => {
+    if (extensionEnabled && !document.getElementById('insta-checker-hud-root')) {
+      mountHud();
+    }
+  }, 2500);
+})();
+
+
+========================================
+FILE: popup.html
+========================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Insta Checker Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h1 class="logo">Insta Checker</h1>
+        <label class="switch" title="Toggle Extension ON/OFF">
+          <input type="checkbox" id="extension-toggle" checked>
+          <span class="slider round"></span>
+        </label>
+      </div>
+      <p class="subtitle">Secure connection analyzer</p>
+    </header>
+
+    <!-- Stats Panel -->
+    <div class="stats-panel">
+      <div class="stat-box">
+        <span class="stat-val" id="stat-followers">0</span>
+        <span class="stat-lbl">Followers</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-box">
+        <span class="stat-val" id="stat-following">0</span>
+        <span class="stat-lbl">Following</span>
+      </div>
+    </div>
+    
+    <div class="last-scan" id="last-scan-txt">Last scan: Never</div>
+
+    <!-- Segmented Tabs (Shadcn UI style) -->
+    <div class="tabs-container">
+      <button class="tab-btn active" data-tab="not-following">
+        Unfollowers
+        <span class="tab-badge" id="badge-not-following">0</span>
+      </button>
+      <button class="tab-btn" data-tab="fans">
+        Fans
+        <span class="tab-badge" id="badge-fans">0</span>
+      </button>
+      <button class="tab-btn" data-tab="mutuals">
+        Mutuals
+        <span class="tab-badge" id="badge-mutuals">0</span>
+      </button>
+    </div>
+
+    <!-- Results Panel -->
+    <div class="results-container">
+      <!-- Active HUD warning/info when scanning is active -->
+      <div id="recording-banner" class="recording-banner hidden">
+        <span class="pulse-dot"></span>
+        <span id="recording-text">Scanning list in progress...</span>
+      </div>
+
+      <!-- List of Users -->
+      <ul id="user-list" class="user-list">
+        <!-- Will be populated dynamically -->
+      </ul>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">✓</div>
+        <p class="empty-title">All caught up!</p>
+        <p class="empty-desc">No accounts found in this category.</p>
+      </div>
+    </div>
+
+    <!-- Queue Controls -->
+    <div class="queue-bar hidden" id="queue-bar" style="display: flex; gap: 8px; align-items: center; justify-content: space-between;">
+      <span class="queue-info" id="queue-info" style="white-space: nowrap; font-size: 11px; margin-right: auto;">779 unfollow</span>
+      <input type="number" id="start-index-input" placeholder="Start # (1)" min="1" style="width: 80px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); color: #fff; font-size: 11px; outline: none;">
+      <button id="start-queue-btn" class="btn queue" style="margin-top: 0; padding: 6px 10px; font-size: 11px; white-space: nowrap;">⚡ Start</button>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="actions">
+      <button id="export-btn" class="btn primary">Copy to Clipboard</button>
+      <button id="reset-btn" class="btn secondary">Reset Data</button>
+    </div>
+
+    <!-- Inline Confirm Panel (replaces browser confirm()) -->
+    <div id="confirm-panel" class="confirm-panel hidden">
+      <p class="confirm-msg" id="confirm-msg">Are you sure?</p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" class="btn secondary">Cancel</button>
+        <button id="confirm-ok" class="btn danger">Confirm</button>
+      </div>
+    </div>
+
+    <!-- Inline Toast Stack -->
+    <div id="popup-toast-stack" class="popup-toast-stack"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
+
+
+
+========================================
+FILE: popup.css
+========================================
+
+/* popup.css - Full Rewrite (Shadcn & NextUI Inspired) */
+:root {
+  --bg: #09090b;
+  --card: #18181b;
+  --border: #27272a;
+  --muted: #71717a;
+  --text: #fafafa;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --success: #10b981;
+  --ig-gradient: linear-gradient(to right, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font);
+  background-color: var(--bg);
+  color: var(--text);
+  width: 380px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  padding: 20px;
+}
+
+/* Header */
+.header {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.logo {
+  font-size: 24px;
+  font-weight: 800;
+  margin: 0;
+  letter-spacing: -0.035em;
+  background: var(--ig-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 4px 0 0 0;
+  font-weight: 600;
+}
+
+/* Stats Panel */
+.stats-panel {
+  display: flex;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  margin-bottom: 8px;
+  align-items: center;
+  justify-content: space-around;
+}
+
+.stat-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.stat-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.stat-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.stat-divider {
+  width: 1px;
+  height: 24px;
+  background-color: var(--border);
+}
+
+.last-scan {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 18px;
+}
+
+/* Segmented Tabs (Shadcn style) */
+.tabs-container {
+  display: flex;
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 4px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  gap: 2px;
+}
+
+.tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  background: var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tab-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 10px;
+  color: var(--muted);
+  transition: var(--transition);
+}
+
+.tab-btn.active .tab-badge {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+/* Results Section */
+.results-container {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  min-height: 120px;
+  max-height: 135px;
+  overflow-y: auto;
+  margin-bottom: 18px;
+  position: relative;
+}
+
+/* Live scan banner */
+.recording-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.15);
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--danger);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: mini-pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes mini-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.5; }
+}
+
+/* User List */
+.user-list {
+  list-style: none;
+  padding: 6px;
+  margin: 0;
+}
+
+.user-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius);
+  transition: var(--transition);
+}
+
+.user-item:last-child {
+  border-bottom: none;
+}
+
+.user-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.user-link {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.user-link:hover {
+  color: var(--accent);
+}
+
+.action-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px;
+  border-radius: 4px;
+  transition: var(--transition);
+}
+
+.action-arrow:hover {
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.empty-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  color: var(--text);
+}
+
+.empty-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Actions footer */
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.btn {
+  flex: 1;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  outline: none;
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn.secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.btn.secondary:hover {
+  background: var(--card);
+  border-color: var(--muted);
+}
+
+.queue-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  gap: 10px;
+}
+.queue-info {
+  font-size: 12px;
+  color: var(--muted);
+}
+.btn.queue {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  font-size: 12px;
+  padding: 7px 12px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.btn.queue:hover {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+  transform: translateY(-1px);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Inline Confirm Panel */
+.confirm-panel {
+  background: var(--card);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  margin-top: 10px;
+  animation: slide-up 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.confirm-msg {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0 0 12px 0;
+  line-height: 1.5;
+}
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+.confirm-actions .btn {
+  flex: 1;
+  padding: 8px;
+  font-size: 12px;
+}
+.btn.danger {
+  background: var(--danger);
+  color: white;
+}
+.btn.danger:hover {
+  background: var(--danger-hover);
+}
+
+/* Popup inline Toast Stack */
+.popup-toast-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.popup-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--card);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.4;
+  animation: slide-up 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.2s, transform 0.2s;
+}
+.popup-toast.info    { border-color: rgba(59, 130, 246, 0.35); }
+.popup-toast.success { border-color: rgba(16, 185, 129, 0.35); }
+.popup-toast.warning { border-color: rgba(245, 158, 11, 0.35); }
+.popup-toast.error   { border-color: rgba(239, 68, 68, 0.35);  }
+.popup-toast-icon { flex-shrink: 0; }
+.popup-toast-msg  { flex: 1; }
+.popup-toast-close {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 16px; line-height: 1; padding: 0;
+  transition: color 0.15s; flex-shrink: 0;
+}
+.popup-toast-close:hover { color: var(--text); }
+.popup-toast-btns {
+  display: flex; gap: 6px; margin-top: 8px;
+}
+.popup-toast-btns button {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px; color: var(--text);
+  font-size: 11px; font-weight: 600;
+  padding: 4px 10px; cursor: pointer;
+  transition: all 0.15s;
+}
+.popup-toast-btns button:hover {
+  background: rgba(255,255,255,0.12);
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+
+/* Scrollbar */
+.results-container::-webkit-scrollbar {
+  width: 5px;
+}
+
+.results-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.results-container::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 10px;
+}
+
+.results-container::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Toggle Switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 20px;
+}
+.switch input { 
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #3f3f46; /* Clear track color when OFF */
+  transition: .4s;
+  border-radius: 20px;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #fafafa; /* Bright knob */
+  transition: .4s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+input:checked + .slider {
+  background-color: var(--success); /* Green track when ON */
+}
+input:checked + .slider:before {
+  transform: translateX(20px);
+  background-color: #ffffff;
+}
+
+
+========================================
+FILE: popup.js
+========================================
+
+// popup.js - Full Rewrite
+document.addEventListener('DOMContentLoaded', () => {
+  // Elements
+  const statFollowers = document.getElementById('stat-followers');
+  const statFollowing = document.getElementById('stat-following');
+  const lastScanTxt = document.getElementById('last-scan-txt');
+  
+  const badgeNotFollowing = document.getElementById('badge-not-following');
+  const badgeFans = document.getElementById('badge-fans');
+  const badgeMutuals = document.getElementById('badge-mutuals');
+  
+  const recordingBanner = document.getElementById('recording-banner');
+  const recordingText = document.getElementById('recording-text');
+  
+  const userList = document.getElementById('user-list');
+  const emptyState = document.getElementById('empty-state');
+  
+  const exportBtn       = document.getElementById('export-btn');
+  const resetBtn        = document.getElementById('reset-btn');
+  const tabButtons      = document.querySelectorAll('.tab-btn');
+  const queueBar        = document.getElementById('queue-bar');
+  const queueInfo       = document.getElementById('queue-info');
+  const startQueueBtn   = document.getElementById('start-queue-btn');
+  const startIndexInput = document.getElementById('start-index-input');
+  const confirmPanel    = document.getElementById('confirm-panel');
+  const confirmMsg      = document.getElementById('confirm-msg');
+  const confirmOk       = document.getElementById('confirm-ok');
+  const confirmCancel   = document.getElementById('confirm-cancel');
+  const toastStack      = document.getElementById('popup-toast-stack');
+  const extensionToggle = document.getElementById('extension-toggle');
+
+  let state = {
+    followers: [],
+    following: [],
+    lastScan: null,
+    isRecording: false,
+    recordingType: null,
+    extensionEnabled: true
+  };
+
+
+  // Initialize Toggle
+  chrome.storage.local.get(['extensionEnabled'], (res) => {
+    if (res.extensionEnabled !== undefined) {
+      state.extensionEnabled = res.extensionEnabled;
+      extensionToggle.checked = state.extensionEnabled;
+    }
+  });
+
+  extensionToggle.addEventListener('change', (e) => {
+    const isEnabled = e.target.checked;
+    state.extensionEnabled = isEnabled;
+    chrome.storage.local.set({ extensionEnabled: isEnabled });
+    
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'toggleExtension', enabled: isEnabled }).catch(() => {});
+      }
+    });
+  });
+
+  // ── Custom dialog helpers (no native confirm/alert) ──
+  function showPopupToast(msg, type = 'info', duration = 4000) {
+    const icons = { info: 'ℹ️', success: '✅', warning: '⚠️', error: '🔴' };
+    const t = document.createElement('div');
+    t.className = `popup-toast ${type}`;
+    t.innerHTML = `
+      <span class="popup-toast-icon">${icons[type] || 'ℹ️'}</span>
+      <span class="popup-toast-msg">${msg}</span>
+      <button class="popup-toast-close" title="Dismiss">×</button>
+    `;
+    t.querySelector('.popup-toast-close').addEventListener('click', () => dismissPopupToast(t));
+    toastStack.prepend(t);
+    if (duration > 0) setTimeout(() => dismissPopupToast(t), duration);
+    return t;
+  }
+  function dismissPopupToast(el) {
+    if (!el || !el.parentNode) return;
+    el.style.opacity = '0'; el.style.transform = 'translateY(4px)';
+    setTimeout(() => el.remove(), 200);
+  }
+
+  // Returns a Promise<boolean>
+  function showConfirm(message, okLabel = 'Confirm', okClass = 'danger') {
+    return new Promise((resolve) => {
+      confirmMsg.textContent = message;
+      confirmOk.textContent  = okLabel;
+      confirmOk.className    = `btn ${okClass}`;
+      confirmPanel.classList.remove('hidden');
+      confirmPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      function cleanup(result) {
+        confirmPanel.classList.add('hidden');
+        confirmOk.replaceWith(confirmOk.cloneNode(true));     // remove old listeners
+        confirmCancel.replaceWith(confirmCancel.cloneNode(true));
+        resolve(result);
+      }
+      // Re-query after cloneNode
+      confirmPanel.querySelector('#confirm-ok').addEventListener('click', () => cleanup(true),  { once: true });
+      confirmPanel.querySelector('#confirm-cancel').addEventListener('click', () => cleanup(false), { once: true });
+    });
+  }
+
+  // State
+  let followers = [];
+  let following = [];
+  let currentTab = 'not-following'; // 'not-following', 'fans', 'mutuals'
+  
+  let notFollowingList = [];
+  let fansList = [];
+  let mutualsList = [];
+
+  // 1. Initial status query to content script
+  queryContentScriptStatus();
+
+  // 2. Load stored data
+  loadStoredData();
+
+  // Listen for live counts from content script
+  chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'updateCount') {
+      loadStoredData();
+    }
+  });
+
+  // Tab switching
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentTab = btn.getAttribute('data-tab');
+      renderList();
+      updateQueueBar();
+    });
+  });
+
+  // Export handler
+  exportBtn.addEventListener('click', () => {
+    let listToCopy = [];
+    if (currentTab === 'not-following') listToCopy = notFollowingList;
+    else if (currentTab === 'fans') listToCopy = fansList;
+    else if (currentTab === 'mutuals') listToCopy = mutualsList;
+
+    if (listToCopy.length === 0) {
+      showPopupToast('Nothing to copy in this tab!', 'warning');
+      return;
+    }
+
+    const textToCopy = listToCopy.join('\n');
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        const originalText = exportBtn.textContent;
+        exportBtn.textContent = 'Copied!';
+        exportBtn.style.background = 'var(--success)';
+        setTimeout(() => {
+          exportBtn.textContent = originalText;
+          exportBtn.style.background = '';
+        }, 1500);
+      })
+      .catch(err => {
+        console.error('Failed to copy text: ', err);
+      });
+  });
+
+  // Reset handler
+  resetBtn.addEventListener('click', async () => {
+    const confirmed = await showConfirm('Clear all followers & following data? This cannot be undone.', 'Clear Data', 'danger');
+    if (!confirmed) return;
+
+    chrome.storage.local.clear(() => {
+      followers = [];
+      following = [];
+      notFollowingList = [];
+      fansList = [];
+      mutualsList = [];
+      
+      statFollowers.textContent = '0';
+      statFollowing.textContent = '0';
+      lastScanTxt.textContent = 'Last scan: Never';
+      
+      badgeNotFollowing.textContent = '0';
+      badgeFans.textContent = '0';
+      badgeMutuals.textContent = '0';
+      
+      renderList();
+      updateQueueBar();
+    });
+  });
+
+  startQueueBtn.addEventListener('click', async () => {
+    if (notFollowingList.length === 0) return;
+
+    let startIndex = 0;
+    
+    // Check manual input first
+    const manualStart = parseInt(startIndexInput.value, 10);
+    if (!isNaN(manualStart) && manualStart > 0 && manualStart <= notFollowingList.length) {
+      startIndex = manualStart - 1; // 0-indexed internally
+    } else {
+      // Check for checkpoint
+      const res = await chrome.storage.local.get(['batchQueue', 'batchQueueIndex']);
+      if (res.batchQueue && res.batchQueue.length === notFollowingList.length && res.batchQueueIndex > 0 && res.batchQueueIndex < notFollowingList.length) {
+        const resume = await showConfirm(
+          `📌 Checkpoint found at user #${res.batchQueueIndex + 1}.\nDo you want to resume from here?\n\n(Click 'Cancel' to restart from 0)`,
+          'Resume Queue',
+          'info'
+        );
+        if (resume) {
+          startIndex = res.batchQueueIndex;
+        }
+      }
+    }
+
+    const confirmed = await showConfirm(
+      `Start 4-Window Batch Queue for ${notFollowingList.length} accounts${startIndex > 0 ? ` (Starting from #${startIndex + 1})` : ''}?\nMake sure you have exactly 4 Instagram tabs open and arranged.`,
+      '⚡ Start Queue',
+      'danger'
+    );
+    if (!confirmed) return;
+
+    chrome.runtime.sendMessage({
+      action: 'START_BATCH_QUEUE',
+      queue: [...notFollowingList],
+      startIndex: startIndex
+    }, (res) => {
+      if (res && res.success) {
+        showPopupToast(`Queue started in ${res.count} tabs!`, 'success');
+        setTimeout(() => window.close(), 1500);
+      } else {
+        showPopupToast(`Error: ${res ? res.error : 'Failed to start queue'}`, 'error');
+      }
+    });
+  });
+
+  // Functions
+  async function queryContentScriptStatus() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url.includes("instagram.com")) return;
+
+      chrome.tabs.sendMessage(tab.id, { action: 'getStatus' }, (response) => {
+        if (chrome.runtime.lastError || !response) return;
+
+        if (response.isRecording) {
+          recordingBanner.classList.remove('hidden');
+          recordingText.textContent = `Scanning ${response.recordingType}... (${response.count} loaded)`;
+        } else {
+          recordingBanner.classList.add('hidden');
+        }
+      });
+    } catch (e) {
+      // Content script not ready or not on Instagram
+    }
+  }
+
+  function loadStoredData() {
+    chrome.storage.local.get(['followers', 'following', 'lastScan'], (res) => {
+      followers = res.followers || [];
+      following = res.following || [];
+      
+      statFollowers.textContent = followers.length.toLocaleString();
+      statFollowing.textContent = following.length.toLocaleString();
+      
+      if (res.lastScan) {
+        const scanDate = new Date(res.lastScan);
+        lastScanTxt.textContent = `Last scan: ${scanDate.toLocaleString()}`;
+      } else {
+        lastScanTxt.textContent = 'Last scan: Never';
+      }
+
+      calculateRelationships();
+      renderList();
+      updateQueueBar();
+    });
+  }
+
+  function calculateRelationships() {
+    const followersSet = new Set(followers);
+    const followingSet = new Set(following);
+
+    // 1. Not following me back: I follow them, but they don't follow me
+    notFollowingList = following.filter(user => !followersSet.has(user));
+
+    // 2. Fans: They follow me, but I don't follow them
+    fansList = followers.filter(user => !followingSet.has(user));
+
+    // 3. Mutuals: We both follow each other
+    mutualsList = following.filter(user => followersSet.has(user));
+
+    // Update badges
+    badgeNotFollowing.textContent = notFollowingList.length;
+    badgeFans.textContent = fansList.length;
+    badgeMutuals.textContent = mutualsList.length;
+  }
+
+
+  function updateQueueBar() {
+    if (currentTab === 'not-following' && notFollowingList.length > 0) {
+      queueBar.classList.remove('hidden');
+      queueInfo.textContent = `${notFollowingList.length} unfollowers in queue`;
+    } else {
+      queueBar.classList.add('hidden');
+    }
+  }
+
+  function renderList() {
+    userList.innerHTML = '';
+    let activeList = [];
+
+    if (currentTab === 'not-following') activeList = notFollowingList;
+    else if (currentTab === 'fans') activeList = fansList;
+    else if (currentTab === 'mutuals') activeList = mutualsList;
+
+    if (activeList.length === 0) {
+      emptyState.classList.remove('hidden');
+      userList.classList.add('hidden');
+      return;
+    }
+
+    emptyState.classList.add('hidden');
+    userList.classList.remove('hidden');
+
+    activeList.forEach(username => {
+      const li = document.createElement('li');
+      li.className = 'user-item';
+      
+      li.innerHTML = `
+        <a href="https://instagram.com/${username}" target="_blank" class="user-link">@${username}</a>
+        <a href="https://instagram.com/${username}" target="_blank" class="action-arrow" title="Visit profile">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </a>
+      `;
+      userList.appendChild(li);
+    });
+  }
+});
