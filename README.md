@@ -1,84 +1,49 @@
 <div align="center">
-  <img src="icon.png" alt="Insta Checker Logo" width="120" height="120">
-  <h1 align="center">Insta Unfollow Checker</h1>
+  <img src="icon.png" alt="Insta Checker Logo" width="100" height="100">
 
-  <p align="center">
-    <strong>A privacy-first, locally-hosted Chrome Extension to analyze your Instagram connections.</strong>
-    <br />
-    <br />
-    <a href="#-features">✨ Features</a>
-    ·
-    <a href="#-installation">🚀 Installation</a>
-    ·
-    <a href="#-how-to-use">📖 Usage</a>
-    ·
-    <a href="#-batch-unfollow-queue">⚡ Batch Queue</a>
-    ·
-    <a href="#-privacy--permissions">🔐 Privacy</a>
-    ·
-    <a href="#-faq">❓ FAQ</a>
-  </p>
+  # Insta Unfollow Checker
 
-  <p align="center">
-    <img src="https://img.shields.io/badge/Version-2.0-blue?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Version 2.0" />
-    <img src="https://img.shields.io/badge/Privacy-100%25_Local-success?style=for-the-badge&logo=shield&logoColor=white" alt="100% Local" />
-    <img src="https://img.shields.io/badge/Manifest-V3-orange?style=for-the-badge" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Platform-Chrome_Extension-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Platform" />
-  </p>
+  A privacy-first, locally-hosted Chrome Extension to analyze your Instagram connections.
+
+  [![Version](https://img.shields.io/badge/version-2.0-blue)](#)
+  [![Privacy](https://img.shields.io/badge/privacy-100%25_local-success)](#)
+  [![Manifest](https://img.shields.io/badge/manifest-v3-orange)](#)
+  [![Platform](https://img.shields.io/badge/platform-chrome_extension-4285F4)](#)
+
+  [Features](#features) •
+  [Installation](#installation) •
+  [Usage](#how-to-use) •
+  [Batch Queue](#batch-unfollow-queue) •
+  [Privacy](#privacy--permissions) •
+  [FAQ](#faq)
 </div>
 
-<br>
+---
 
-<table width="100%">
-<tr><td>
-
-### 📝 About The Project
+## About
 
 **Insta Unfollow Checker** is a free, open-source tool that helps you find out who isn't following you back on Instagram, who your biggest fans are, and who your mutual connections are — all without ever touching your password.
 
-Instead of asking for your login credentials or hitting unofficial APIs (the kind of thing that gets accounts flagged), this extension uses **network interception**. It passively watches the data Instagram's own web app already loads into your browser as you scroll — followers, following, and list data — and reconstructs the picture locally. Nothing is sent anywhere.
+Instead of asking for your login credentials or hitting unofficial APIs, this extension uses **network interception**. It passively watches the data Instagram's own web app already loads into your browser as you scroll — followers, following, and list data — and reconstructs the picture locally. Nothing is sent anywhere.
 
-**Keywords / Topics:** `instagram unfollowers`, `unfollow checker`, `instagram tracker`, `chrome extension`, `privacy-first`, `no password`, `social media analytics`, `dom parsing`, `network interception`, `manifest v3`.
+Built with vanilla HTML, CSS, and JavaScript on Manifest V3 — no frameworks, no build step.
 
-**Built with:**
+## Features
 
-![HTML5](https://img.shields.io/badge/html5-%23E34F26.svg?style=for-the-badge&logo=html5&logoColor=white)
-![CSS3](https://img.shields.io/badge/css3-%231572B6.svg?style=for-the-badge&logo=css3&logoColor=white)
-![JavaScript](https://img.shields.io/badge/javascript-%23323330.svg?style=for-the-badge&logo=javascript&logoColor=%23F7DF1E)
-![Chrome Extensions](https://img.shields.io/badge/Chrome_Extensions-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)
+- **100% Local & Private** — Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required.
+- **Network Interception** — Hooks `fetch` and `XMLHttpRequest` to read follower/following data straight from Instagram's own API responses (`/api/v1/friendships/...` and GraphQL) as you browse. Zero third-party API calls.
+- **DOM Fallback Parser** — A `MutationObserver` also scans the followers/following modal directly, so data is still captured even if the network layer misses something.
+- **Visual DOM Checklists** — Adds `✅ / ⬜` toggles next to every username inside the Instagram modal itself, so you can see — and manually correct — exactly who's been recorded in real time.
+- **Floating HUD** — A minimizable heads-up display shows recording status and a live counter while you scroll, with toast notifications for feedback along the way.
+- **Three-Way Breakdown** — The popup dashboard sorts everyone into:
+  - `Unfollowers` — you follow them, they don't follow you back
+  - `Fans` — they follow you, you don't follow them
+  - `Mutuals` — you follow each other
+- **One-Click Copy** — Copy any list straight to your clipboard for backup or sharing.
+- **Batch Unfollow Queue** — Speeds up manual cleanup by auto-navigating multiple tabs to the next profiles in your Unfollowers list. See [Batch Unfollow Queue](#batch-unfollow-queue) for exactly what it does (and doesn't do).
+- **On/Off Toggle** — Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
 
-</td></tr>
-</table>
-
-<br>
-
-<table width="100%">
-<tr><td>
-
-### ✨ Features
-
-- **🔒 100% Local & Private** — Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required.
-- **📡 Network Interception** — Hooks `fetch` and `XMLHttpRequest` to read follower/following data straight from Instagram's own API responses (`/api/v1/friendships/...` and GraphQL) as you browse. Zero third-party API calls.
-- **🧩 DOM Fallback Parser** — A `MutationObserver` also scans the followers/following modal directly, so data is still captured even if the network layer misses something.
-- **✅ Visual DOM Checklists** — Adds `✅ / ⬜` toggles next to every username inside the Instagram modal itself, so you can see — and manually correct — exactly who's been recorded in real time.
-- **🖥️ Floating HUD** — A minimizable heads-up display shows recording status and a live counter while you scroll, with toast notifications for feedback along the way.
-- **📊 Three-Way Breakdown** — The popup dashboard sorts everyone into:
-  - **Unfollowers** — you follow them, they don't follow you back
-  - **Fans** — they follow you, you don't follow them
-  - **Mutuals** — you follow each other
-- **📋 One-Click Copy** — Copy any list straight to your clipboard for backup or sharing.
-- **⚡ Batch Unfollow Queue** — Speeds up manual cleanup by auto-navigating multiple tabs to the next profiles in your Unfollowers list. See the [Batch Queue](#-batch-unfollow-queue) section for exactly what it does (and doesn't do).
-- **🔌 On/Off Toggle** — Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
-
-</td></tr>
-</table>
-
-<br>
-
-<table width="100%">
-<tr><td>
-
-### 🚀 Installation
+## Installation
 
 Since this extension prioritizes your privacy, it's designed to be run locally in Chrome's Developer Mode rather than distributed through the Web Store.
 
@@ -87,22 +52,14 @@ Since this extension prioritizes your privacy, it's designed to be run locally i
    git clone https://github.com/yourusername/insta-unfollowers-checker.git
    ```
 2. **Open the extension manager**
-   ```text
+   ```
    chrome://extensions/
    ```
 3. **Enable Developer Mode** — toggle the switch in the top-right corner.
 4. **Load the extension** — click **Load unpacked** and select the project folder.
 5. **Pin it** — click the puzzle-piece icon in Chrome's toolbar and pin **Insta Checker** for quick access.
 
-</td></tr>
-</table>
-
-<br>
-
-<table width="100%">
-<tr><td>
-
-### 📖 How To Use
+## How To Use
 
 1. Go to [Instagram.com](https://www.instagram.com/) and open your profile.
 2. Click your **Followers** count to open the list modal. A HUD will appear in the bottom-right corner — click **Start Recording**.
@@ -110,17 +67,9 @@ Since this extension prioritizes your privacy, it's designed to be run locally i
 4. Click **Stop & Save**, close the modal, then repeat the same process for your **Following** list.
 5. Open the extension icon in your toolbar to see your dashboard — **Unfollowers**, **Fans**, and **Mutuals**, fully computed locally.
 
-> **💡 Pro tip:** Want to exclude someone from a list (say, a verified account you don't mind not following back)? Click the `✅` next to their name inside the Instagram modal to flip it to `⬜`. They're removed from that list instantly and won't be re-added automatically.
+> **Tip:** Want to exclude someone from a list (say, a verified account you don't mind not following back)? Click the `✅` next to their name inside the Instagram modal to flip it to `⬜`. They're removed from that list instantly and won't be re-added automatically.
 
-</td></tr>
-</table>
-
-<br>
-
-<table width="100%">
-<tr><td>
-
-### ⚡ Batch Unfollow Queue
+## Batch Unfollow Queue
 
 The **Unfollowers** tab includes an optional **Start Queue** control to make cleaning up a long list less tedious.
 
@@ -134,15 +83,7 @@ The **Unfollowers** tab includes an optional **Start Queue** control to make cle
 
 This keeps a real person in the loop for every unfollow action. That said, working through a large list quickly is still a lot of profile visits and account actions in a short window — pace yourself, and keep an eye out for any rate-limit warnings from Instagram.
 
-</td></tr>
-</table>
-
-<br>
-
-<table width="100%">
-<tr><td>
-
-### 🔐 Privacy & Permissions
+## Privacy & Permissions
 
 | Permission | Why it's needed |
 |---|---|
@@ -152,41 +93,22 @@ This keeps a real person in the loop for every unfollow action. That said, worki
 
 There are no other host permissions, no remote scripts, and no analytics — you can verify this yourself by reading `manifest.json` and the three source files (`content.js`, `interceptor.js`, `background.js`).
 
-</td></tr>
-</table>
+## FAQ
 
-<br>
+**Is it safe for my Instagram account?**
+The extension never logs in, auto-scrolls, or uses Instagram's private API on your behalf — it only reads data your own browser already receives while you scroll and click normally. The Batch Queue still requires you to manually click Unfollow on each profile, so no account action ever happens without you doing it. As with any tool that speeds up repetitive actions on Instagram, avoid rushing through very large lists in one sitting.
 
-<table width="100%">
-<tr><td>
+**Where is my data stored?**
+Entirely in your browser's local storage (`chrome.storage.local`). Nothing is ever transmitted to a remote server — there isn't one.
 
-### ❓ FAQ
+**What happens if I uninstall the extension?**
+Your saved connection history is wiped along with it. Use **Copy to Clipboard** on each tab beforehand if you want to keep a record.
 
-<details>
-  <summary><strong>Is it safe for my Instagram account?</strong></summary>
-  <p>The extension never logs in, auto-scrolls, or uses Instagram's private API on your behalf — it only reads data your own browser already receives while you scroll and click normally. The Batch Queue still requires you to manually click Unfollow on each profile, so no account action ever happens without you doing it. As with any tool that speeds up repetitive actions on Instagram, avoid rushing through very large lists in one sitting.</p>
-</details>
+**Why didn't a user show up in my list?**
+Make sure you scrolled all the way through the modal — Instagram lazy-loads the list in pages, and the extension can only record what's actually been loaded into the page.
 
-<details>
-  <summary><strong>Where is my data stored?</strong></summary>
-  <p>Entirely in your browser's local storage (<code>chrome.storage.local</code>). Nothing is ever transmitted to a remote server — there isn't one.</p>
-</details>
-
-<details>
-  <summary><strong>What happens if I uninstall the extension?</strong></summary>
-  <p>Your saved connection history is wiped along with it. Use <strong>Copy to Clipboard</strong> on each tab beforehand if you want to keep a record.</p>
-</details>
-
-<details>
-  <summary><strong>Why didn't a user show up in my list?</strong></summary>
-  <p>Make sure you scrolled all the way through the modal — Instagram lazy-loads the list in pages, and the extension can only record what's actually been loaded into the page.</p>
-</details>
-
-</td></tr>
-</table>
-
-<br>
+---
 
 <div align="center">
-  <p>Built with ❤️ for privacy-conscious users.</p>
+  Built with ❤️ for privacy-conscious users.
 </div>
