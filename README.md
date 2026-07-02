@@ -31,37 +31,60 @@
 
 ## Features
 
-> [!TIP]
-> ### 🔒 100% Local & Private
+<table>
+<tr><td>
+
+### 🔒 100% Local & Private
+
+> [!NOTE]
 > Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required — your data never leaves your machine.
->
-> ### 📡 Network Interception
+
+### 📡 Network Interception
+
+> [!NOTE]
 > Hooks `fetch` and `XMLHttpRequest` to read follower/following data straight from Instagram's own API responses (`/api/v1/friendships/...` and GraphQL) as you browse. Zero third-party API calls.
->
-> ### 🧩 DOM Fallback Parser
+
+### 🧩 DOM Fallback Parser
+
+> [!NOTE]
 > A `MutationObserver` also scans the followers/following modal directly, so data is still captured even if the network layer misses something.
->
-> ### ✅ Visual DOM Checklists
+
+### ✅ Visual DOM Checklists
+
+> [!NOTE]
 > Adds `✅ / ⬜` toggles next to every username inside the Instagram modal itself, so you can see — and manually correct — exactly who's been recorded in real time.
->
-> ### 🖥️ Floating HUD
+
+### 🖥️ Floating HUD
+
+> [!NOTE]
 > A minimizable heads-up display shows recording status and a live counter while you scroll, with toast notifications for feedback along the way.
->
-> ### 📊 Three-Way Breakdown
+
+### 📊 Three-Way Breakdown
+
+> [!NOTE]
 > The popup dashboard sorts everyone into:
 >
 > - `Unfollowers` — you follow them, they don't follow you back
 > - `Fans` — they follow you, you don't follow them
 > - `Mutuals` — you follow each other
->
-> ### 📋 One-Click Copy
+
+### 📋 One-Click Copy
+
+> [!NOTE]
 > Copy any list straight to your clipboard for backup or sharing — no file exports, no clutter.
->
-> ### ⚡ Batch Unfollow Queue
+
+### ⚡ Batch Unfollow Queue
+
+> [!NOTE]
 > Speeds up manual cleanup by auto-navigating multiple tabs to the next profiles in your Unfollowers list. See [Batch Unfollow Queue](#batch-unfollow-queue) below for exactly what it does (and doesn't do).
->
-> ### 🔌 On/Off Toggle
+
+### 🔌 On/Off Toggle
+
+> [!NOTE]
 > Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
+
+</td></tr>
+</table>
 
 ## Installation
 
