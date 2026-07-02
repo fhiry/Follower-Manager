@@ -31,60 +31,44 @@
 
 ## Features
 
-<table>
-<tr><td>
-
-### 🔒 100% Local & Private
-
-> [!NOTE]
+**🔒 100% Local & Private**
+> [!TIP]
 > Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required — your data never leaves your machine.
 
-### 📡 Network Interception
-
-> [!NOTE]
+**📡 Network Interception**
+> [!TIP]
 > Hooks `fetch` and `XMLHttpRequest` to read follower/following data straight from Instagram's own API responses (`/api/v1/friendships/...` and GraphQL) as you browse. Zero third-party API calls.
 
-### 🧩 DOM Fallback Parser
-
-> [!NOTE]
+**🧩 DOM Fallback Parser**
+> [!TIP]
 > A `MutationObserver` also scans the followers/following modal directly, so data is still captured even if the network layer misses something.
 
-### ✅ Visual DOM Checklists
-
-> [!NOTE]
+**✅ Visual DOM Checklists**
+> [!TIP]
 > Adds `✅ / ⬜` toggles next to every username inside the Instagram modal itself, so you can see — and manually correct — exactly who's been recorded in real time.
 
-### 🖥️ Floating HUD
-
-> [!NOTE]
+**🖥️ Floating HUD**
+> [!TIP]
 > A minimizable heads-up display shows recording status and a live counter while you scroll, with toast notifications for feedback along the way.
 
-### 📊 Three-Way Breakdown
-
-> [!NOTE]
+**📊 Three-Way Breakdown**
+> [!TIP]
 > The popup dashboard sorts everyone into:
->
 > - `Unfollowers` — you follow them, they don't follow you back
 > - `Fans` — they follow you, you don't follow them
 > - `Mutuals` — you follow each other
 
-### 📋 One-Click Copy
-
-> [!NOTE]
+**📋 One-Click Copy**
+> [!TIP]
 > Copy any list straight to your clipboard for backup or sharing — no file exports, no clutter.
 
-### ⚡ Batch Unfollow Queue
-
-> [!NOTE]
+**⚡ Batch Unfollow Queue**
+> [!TIP]
 > Speeds up manual cleanup by auto-navigating multiple tabs to the next profiles in your Unfollowers list. See [Batch Unfollow Queue](#batch-unfollow-queue) below for exactly what it does (and doesn't do).
 
-### 🔌 On/Off Toggle
-
-> [!NOTE]
+**🔌 On/Off Toggle**
+> [!TIP]
 > Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
-
-</td></tr>
-</table>
 
 ## Installation
 
