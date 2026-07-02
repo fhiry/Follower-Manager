@@ -30,18 +30,45 @@ Built with vanilla HTML, CSS, and JavaScript on Manifest V3 — no frameworks, n
 
 ## Features
 
-- **100% Local & Private** — Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required.
-- **Network Interception** — Hooks `fetch` and `XMLHttpRequest` to read follower/following data straight from Instagram's own API responses (`/api/v1/friendships/...` and GraphQL) as you browse. Zero third-party API calls.
-- **DOM Fallback Parser** — A `MutationObserver` also scans the followers/following modal directly, so data is still captured even if the network layer misses something.
-- **Visual DOM Checklists** — Adds `✅ / ⬜` toggles next to every username inside the Instagram modal itself, so you can see — and manually correct — exactly who's been recorded in real time.
-- **Floating HUD** — A minimizable heads-up display shows recording status and a live counter while you scroll, with toast notifications for feedback along the way.
-- **Three-Way Breakdown** — The popup dashboard sorts everyone into:
-  - `Unfollowers` — you follow them, they don't follow you back
-  - `Fans` — they follow you, you don't follow them
-  - `Mutuals` — you follow each other
-- **One-Click Copy** — Copy any list straight to your clipboard for backup or sharing.
-- **Batch Unfollow Queue** — Speeds up manual cleanup by auto-navigating multiple tabs to the next profiles in your Unfollowers list. See [Batch Unfollow Queue](#batch-unfollow-queue) for exactly what it does (and doesn't do).
-- **On/Off Toggle** — Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
+### 🔒 100% Local & Private
+
+Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required — your data never leaves your machine.
+
+### 📡 Network Interception
+
+Hooks `fetch` and `XMLHttpRequest` to read follower/following data straight from Instagram's own API responses (`/api/v1/friendships/...` and GraphQL) as you browse. Zero third-party API calls.
+
+### 🧩 DOM Fallback Parser
+
+A `MutationObserver` also scans the followers/following modal directly, so data is still captured even if the network layer misses something.
+
+### ✅ Visual DOM Checklists
+
+Adds `✅ / ⬜` toggles next to every username inside the Instagram modal itself, so you can see — and manually correct — exactly who's been recorded in real time.
+
+### 🖥️ Floating HUD
+
+A minimizable heads-up display shows recording status and a live counter while you scroll, with toast notifications for feedback along the way.
+
+### 📊 Three-Way Breakdown
+
+The popup dashboard sorts everyone into:
+
+- `Unfollowers` — you follow them, they don't follow you back
+- `Fans` — they follow you, you don't follow them
+- `Mutuals` — you follow each other
+
+### 📋 One-Click Copy
+
+Copy any list straight to your clipboard for backup or sharing — no file exports, no clutter.
+
+### ⚡ Batch Unfollow Queue
+
+Speeds up manual cleanup by auto-navigating multiple tabs to the next profiles in your Unfollowers list. See [Batch Unfollow Queue](#batch-unfollow-queue) below for exactly what it does (and doesn't do).
+
+### 🔌 On/Off Toggle
+
+Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
 
 ## Installation
 
