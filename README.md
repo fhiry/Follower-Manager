@@ -31,6 +31,9 @@
 
 ## Features
 
+<table>
+<tr><td>
+
 **🔒 100% Local & Private**
 > [!TIP]
 > Everything lives in `chrome.storage.local`. No backend, no telemetry, no account required — your data never leaves your machine.
@@ -69,6 +72,9 @@
 **🔌 On/Off Toggle**
 > [!TIP]
 > Disable the extension per-tab without uninstalling; the Instagram page reloads clean.
+
+</td></tr>
+</table>
 
 ## Installation
 
